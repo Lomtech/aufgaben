@@ -158,7 +158,7 @@ body.wide main { max-width: 980px; }
 
 #list:empty { display: none; }
 
-li {
+#list li {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -167,10 +167,10 @@ li {
   border-bottom: 1px solid var(--line);
 }
 
-li:last-child { border-bottom: 0; }
-li:hover { background: #fcfcfd; }
+#list li:last-child { border-bottom: 0; }
+#list li:hover { background: #fcfcfd; }
 
-li input[type="checkbox"] {
+#list li input[type="checkbox"] {
   flex: none;
   width: 17px;
   height: 17px;
@@ -203,7 +203,7 @@ li input[type="checkbox"] {
 
 .edit:focus { outline: none; box-shadow: 0 0 0 3px rgb(37 99 235 / 0.12); }
 
-li.done .t { color: var(--muted); text-decoration: line-through; }
+#list li.done .t { color: var(--muted); text-decoration: line-through; }
 
 /* Priorität: Punkt rechts, Klick schaltet weiter */
 .prio {
@@ -228,8 +228,8 @@ li.done .t { color: var(--muted); text-decoration: line-through; }
 }
 
 .prio:hover::after { border-color: var(--muted); }
-li.prio-1 .prio::after { background: var(--amber); border-color: var(--amber); }
-li.prio-2 .prio::after { background: var(--red); border-color: var(--red); }
+#list li.prio-1 .prio::after { background: var(--amber); border-color: var(--amber); }
+#list li.prio-2 .prio::after { background: var(--red); border-color: var(--red); }
 
 .del {
   flex: none;
@@ -246,7 +246,7 @@ li.prio-2 .prio::after { background: var(--red); border-color: var(--red); }
   transition: opacity .08s, background .08s, color .08s;
 }
 
-li:hover .del, .del:focus-visible { opacity: 1; }
+#list li:hover .del, .del:focus-visible { opacity: 1; }
 .del:hover { background: #fee2e2; color: var(--red); }
 
 #empty {

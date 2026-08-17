@@ -274,13 +274,35 @@ const CMD = {
   p:  () => document.execCommand('formatBlock', false, 'p'),
   bold:   () => document.execCommand('bold'),
   italic: () => document.execCommand('italic'),
-  code:   () => document.execCommand('formatBlock', false, 'pre'),
   ul:     () => document.execCommand('insertUnorderedList'),
   ol:     () => document.execCommand('insertOrderedList'),
-  quote:  () => document.execCommand('formatBlock', false, 'blockquote'),
   hr:     () => document.execCommand('insertHorizontalRule'),
-  clear:  () => { document.execCommand('removeFormat'); CMD.p(); },
+  // formatBlock('pre') reißt in Chrome das ganze Dokument in den Block – selbst machen
+  code:   () => replaceBlock('PRE'),
+  quote:  () => replaceBlock('BLOCKQUOTE'),
+  clear:  () => {
+    document.execCommand('removeFormat');
+    const b = blockOf(getSelection().anchorNode);
+    if (b && /^(PRE|BLOCKQUOTE)$/.test(b.tagName)) replaceBlock('P');
+    else CMD.p();
+  },
 };
+
+/** Aktuellen Block durch einen anderen ersetzen, Inhalt und Schreibmarke behalten. */
+function replaceBlock(tag) {
+  const b = blockOf(getSelection().anchorNode);
+  if (!b || b.tagName === tag) return;
+  const el = document.createElement(tag.toLowerCase());
+  while (b.firstChild) el.appendChild(b.firstChild);
+  if (!el.firstChild) el.appendChild(document.createElement('br'));
+  b.replaceWith(el);
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  r.collapse(false);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+}
 
 const when = ts => {
   const d = new Date(ts);
@@ -353,15 +375,20 @@ noteList.addEventListener('click', e => {
 });
 
 $('#note-new').addEventListener('click', async () => {
+  // flush() liest den bisherigen Inhalt synchron aus – erst danach darf geleert werden
+  const gesichert = flush();
+  note = null;
+  $('.doc article').hidden = false;
+  $('#no-note').hidden = true;
+  noteTitle.value = '';
+  editor.innerHTML = '<p><br></p>';
+  saved('');
+  noteTitle.focus();      // synchron, sonst löst ein Enter erneut die Schaltfläche aus
   try {
-    await flush();
+    await gesichert;
     note = await api('POST', '/api/notes', { title: '', body: '' });
-    notes.unshift({ id: note.id, title: note.title, updated: note.updated });
-    noteTitle.value = '';
-    editor.innerHTML = '<p><br></p>';
-    saved('');
+    (notes ??= []).unshift({ id: note.id, title: note.title, updated: note.updated });
     renderNotes();
-    noteTitle.focus();
   } catch (e) { notify(e.message); }
 });
 
@@ -426,12 +453,17 @@ function blockOf(node) {
   return !el || el === editor ? null : el;
 }
 
-/** Zeilenumbruch, danach Fließtext – Überschriften vererben sich nicht.
-    Der Browser führt Teilung und Schreibmarke selbst, wir korrigieren nur den Blocktyp. */
-function newParagraph() {
-  document.execCommand('insertParagraph');
-  CMD.p();
-  tidy();
+/** Leerer Fließtext-Absatz hinter dem Block – Überschrift und Code vererben sich nicht. */
+function paragraphAfter(b) {
+  const p = document.createElement('p');
+  p.appendChild(document.createElement('br'));
+  b.after(p);
+  const r = document.createRange();
+  r.setStart(p, 0);
+  r.collapse(true);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
 }
 
 /** Steht die Schreibmarke am Ende des Blocks? */
@@ -477,16 +509,16 @@ editor.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     if (b.tagName === 'PRE') {                       // im Codeblock: Zeilenumbruch,
       e.preventDefault();                            // zweimal Enter steigt aus
-      if (b.textContent.endsWith('\n')) {
-        document.execCommand('delete');   // die leere letzte Zeile wieder weg
-        newParagraph();
+      if (b.lastChild?.nodeName === 'BR' && atBlockEnd(b)) {
+        b.lastChild.remove();                        // leere Schlusszeile weg
+        paragraphAfter(b);
       } else {
-        document.execCommand('insertText', false, '\n');
+        document.execCommand('insertLineBreak');     // Chrome setzt hier ein <br>
       }
       queueSave();
     } else if (/^H[123]$/.test(b.tagName) && atBlockEnd(b)) {
       e.preventDefault();
-      newParagraph();
+      paragraphAfter(b);
       queueSave();
     }
     return;
