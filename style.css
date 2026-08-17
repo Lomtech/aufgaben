@@ -333,7 +333,8 @@ kbd {
   align-items: start;
 }
 
-#no-note { margin: 40px 0; color: var(--muted); font-size: 14px; text-align: center; }
+#no-note { margin: 60px 0; color: var(--muted); font-size: 14px; text-align: center; }
+#no-note b { font-weight: 600; color: #52525b; }
 
 /* --- Liste der Texte --- */
 

@@ -79,9 +79,9 @@
           <button id="note-del">Löschen</button>
         </div>
       </article>
-    </div>
 
-    <p id="no-note" hidden>Noch kein Text. Links auf <b>Neuer Text</b> klicken.</p>
+      <p id="no-note" hidden>Noch kein Text — links auf <b>Neuer Text</b> klicken.</p>
+    </div>
   </section>
 </main>
 
@@ -297,8 +297,8 @@ function renderNotes() {
       <span>${esc(n.title) || 'Ohne Titel'}</span><time>${when(n.updated)}</time>
     </li>`).join('');
   const leer = !notes || notes.length === 0;
-  $('.doc').hidden = leer;
-  $('#no-note').hidden = !leer;
+  $('.doc article').hidden = leer;      // Seitenleiste bleibt sichtbar, sonst wäre
+  $('#no-note').hidden = !leer;         // "Neuer Text" nicht erreichbar
 }
 
 async function loadNotes() {
@@ -329,6 +329,7 @@ function queueSave() {
 async function flush() {
   clearTimeout(saveTimer);
   if (!note) return;
+  tidy();                                   // nur gültiges HTML in die Datenbank
   const title = noteTitle.value.trim(), html = editor.innerHTML;
   if (title === note.title && html === note.body) return;
   try {
@@ -430,6 +431,7 @@ function blockOf(node) {
 function newParagraph() {
   document.execCommand('insertParagraph');
   CMD.p();
+  tidy();
 }
 
 /** Steht die Schreibmarke am Ende des Blocks? */
@@ -447,6 +449,19 @@ function apply(cmd) {
   const b = blockOf(getSelection().anchorNode);
   if (b && /^H[123]$/.test(b.tagName) && ['ul', 'ol', 'quote', 'code'].includes(cmd)) CMD.p();
   CMD[cmd]?.();
+  tidy();
+}
+
+/** execCommand schachtelt Blöcke gern in ein <p>. Das ist ungültiges HTML und
+    würde beim Neuladen anders geparst – also nach oben ziehen. */
+function tidy() {
+  const BLOCK = /^(UL|OL|P|H1|H2|H3|BLOCKQUOTE|PRE|DIV)$/;
+  for (const p of [...editor.querySelectorAll('p')]) {
+    const drin = [...p.children].filter(c => BLOCK.test(c.tagName));
+    if (!drin.length) continue;
+    for (const b of drin) p.before(b);
+    if (!p.textContent.trim() && !p.querySelector('img') && !getSelection().containsNode(p, true)) p.remove();
+  }
 }
 
 editor.addEventListener('keydown', e => {
@@ -463,15 +478,15 @@ editor.addEventListener('keydown', e => {
     if (b.tagName === 'PRE') {                       // im Codeblock: Zeilenumbruch,
       e.preventDefault();                            // zweimal Enter steigt aus
       if (b.textContent.endsWith('\n')) {
-        b.textContent = b.textContent.slice(0, -1);
-        newParagraph(b);
+        document.execCommand('delete');   // die leere letzte Zeile wieder weg
+        newParagraph();
       } else {
         document.execCommand('insertText', false, '\n');
       }
       queueSave();
     } else if (/^H[123]$/.test(b.tagName) && atBlockEnd(b)) {
       e.preventDefault();
-      newParagraph(b);
+      newParagraph();
       queueSave();
     }
     return;
@@ -481,8 +496,15 @@ editor.addEventListener('keydown', e => {
   const cmd = MARK[b.textContent];
   if (!cmd || (b.tagName === 'LI' && (cmd === 'ul' || cmd === 'ol'))) return;
   e.preventDefault();
-  b.textContent = '';
-  caretAt(b, 0);
+
+  // Marker über die Auswahl löschen, damit die Schreibmarke beim Browser bleibt
+  const sel = getSelection();
+  const r = document.createRange();
+  r.selectNodeContents(b);
+  r.setEnd(sel.anchorNode, sel.anchorOffset);
+  sel.removeAllRanges();
+  sel.addRange(r);
+  document.execCommand('delete');
   apply(cmd);
   queueSave();
 });
