@@ -1,0 +1,16 @@
+# von gitup angelegt
+target/
+node_modules/
+dist/
+build/
+_build/
+.next/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log

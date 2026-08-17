@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aufgaben</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>✓</text></svg>">
+</head>
+<body>
+
+<main>
+  <header>
+    <nav class="views">
+      <button data-v="tasks" class="on">Aufgaben</button>
+      <button data-v="notes">Text</button>
+    </nav>
+    <span id="count"></span>
+  </header>
+
+  <section id="view-tasks">
+  <form id="new">
+    <input id="title" placeholder="Neue Aufgabe …" autocomplete="off" autofocus>
+    <button type="submit" aria-label="Hinzufügen">+</button>
+  </form>
+
+  <div class="bar">
+    <div class="tabs">
+      <button data-f="open" class="on">Offen</button>
+      <button data-f="all">Alle</button>
+      <button data-f="done">Erledigt</button>
+    </div>
+    <input id="q" placeholder="Suchen" autocomplete="off">
+  </div>
+
+  <ul id="list"></ul>
+  <p id="empty" hidden>Nichts hier.</p>
+
+  <footer>
+    <button id="purge">Erledigte löschen</button>
+    <span class="keys"><kbd>N</kbd> neu <kbd>/</kbd> suchen <kbd>Enter</kbd> speichern <kbd>Esc</kbd> abbrechen</span>
+  </footer>
+  </section>
+
+  <section id="view-notes" hidden>
+    <div class="doc">
+      <aside>
+        <button id="note-new">Neuer Text</button>
+        <ul id="notes"></ul>
+      </aside>
+
+      <article>
+        <input id="note-title" placeholder="Titel" autocomplete="off">
+
+        <div class="tools">
+          <button data-cmd="h1" title="Überschrift 1 (⌘1)">H1</button>
+          <button data-cmd="h2" title="Überschrift 2 (⌘2)">H2</button>
+          <button data-cmd="h3" title="Überschrift 3 (⌘3)">H3</button>
+          <button data-cmd="p"  title="Fließtext (⌘0)">Text</button>
+          <i></i>
+          <button data-cmd="bold"   title="Fett (⌘B)"><b>B</b></button>
+          <button data-cmd="italic" title="Kursiv (⌘I)"><em>K</em></button>
+          <button data-cmd="code"   title="Codeblock">&lt;/&gt;</button>
+          <i></i>
+          <button data-cmd="ul"    title="Liste">•&nbsp;—</button>
+          <button data-cmd="ol"    title="Nummerierte Liste">1.&nbsp;—</button>
+          <button data-cmd="quote" title="Zitat">&rdquo;</button>
+          <button data-cmd="hr"    title="Trennlinie">—</button>
+          <i></i>
+          <button data-cmd="clear" title="Formatierung entfernen">✕</button>
+        </div>
+
+        <div id="editor" contenteditable="true" spellcheck="true"></div>
+
+        <div class="meta">
+          <span id="saved"></span>
+          <span class="spacer"></span>
+          <button id="note-print">Drucken / PDF</button>
+          <button id="note-del">Löschen</button>
+        </div>
+      </article>
+    </div>
+
+    <p id="no-note" hidden>Noch kein Text. Links auf <b>Neuer Text</b> klicken.</p>
+  </section>
+</main>
+
+<div id="toast" hidden><span></span><button id="undo">Rückgängig</button></div>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const list = $('#list'), titleIn = $('#title'), qIn = $('#q'), toast = $('#toast');
+
+let tasks = [], filter = 'open', query = '', editing = null, undoItem = null, toastTimer = 0;
+
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+const order = (a, b) => b.prio - a.prio || b.id - a.id;
+
+async function api(method, url, payload) {
+  const res = await fetch(url, {
+    method,
+    headers: payload ? { 'content-type': 'application/json' } : undefined,
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  return res.json();
+}
+
+/* ------------------------------------------------------------ Rendern --- */
+
+function row(t) {
+  return `<li data-id="${t.id}" class="${t.done ? 'done' : ''} prio-${t.prio}">
+    <input type="checkbox" ${t.done ? 'checked' : ''} aria-label="Erledigt">
+    ${editing === t.id
+      ? `<input class="edit" value="${esc(t.title)}">`
+      : `<span class="t">${esc(t.title)}</span>`}
+    <button class="prio" title="Priorität ändern" aria-label="Priorität"></button>
+    <button class="del" title="Löschen" aria-label="Löschen">×</button>
+  </li>`;
+}
+
+function render() {
+  const q = query.trim().toLowerCase();
+  const view = tasks
+    .filter(t => (filter === 'all' || (filter === 'done') === !!t.done))
+    .filter(t => !q || t.title.toLowerCase().includes(q))
+    .sort(order);
+
+  list.innerHTML = view.map(row).join('');
+  $('#empty').hidden = view.length > 0;
+  const open = tasks.filter(t => !t.done).length;
+  $('#count').textContent = open ? `${open} offen` : 'alles erledigt';
+
+  const box = list.querySelector('.edit');
+  if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+}
+
+/* ------------------------------------------------------------ Aktionen --- */
+
+async function patch(id, changes) {
+  const t = tasks.find(x => x.id === id);
+  if (!t) return;
+  const before = { ...t };
+  Object.assign(t, changes);          // optimistisch: UI zuerst
+  render();
+  try { Object.assign(t, await api('PATCH', `/api/tasks/${id}`, changes)); }
+  catch (e) { Object.assign(t, before); render(); notify(e.message); }
+}
+
+$('#new').addEventListener('submit', async e => {
+  e.preventDefault();
+  const title = titleIn.value.trim();
+  if (!title) return;
+  titleIn.value = '';
+  const tmp = { id: Date.now(), title, done: 0, prio: 0, created: Date.now() };
+  tasks.push(tmp);
+  render();
+  try { Object.assign(tmp, await api('POST', '/api/tasks', { title })); render(); }
+  catch (e) { tasks = tasks.filter(t => t !== tmp); render(); notify(e.message); }
+});
+
+titleIn.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); $('#new').requestSubmit(); }
+});
+
+list.addEventListener('change', e => {
+  if (e.target.type !== 'checkbox') return;
+  patch(Number(e.target.closest('li').dataset.id), { done: e.target.checked });
+});
+
+list.addEventListener('click', async e => {
+  const li = e.target.closest('li');
+  if (!li) return;
+  const id = Number(li.dataset.id);
+
+  if (e.target.classList.contains('t')) { editing = id; render(); }
+  else if (e.target.classList.contains('prio')) {
+    patch(id, { prio: (tasks.find(t => t.id === id).prio + 1) % 3 });
+  }
+  else if (e.target.classList.contains('del')) {
+    const i = tasks.findIndex(t => t.id === id);
+    undoItem = tasks[i];
+    tasks.splice(i, 1);
+    if (editing === id) editing = null;
+    render();
+    try { await api('DELETE', `/api/tasks/${id}`); notify('Gelöscht', true); }
+    catch (err) { tasks.push(undoItem); undoItem = null; render(); notify(err.message); }
+  }
+});
+
+list.addEventListener('keydown', e => {
+  if (!e.target.classList.contains('edit')) return;
+  if (e.key === 'Enter') { e.target.blur(); }
+  if (e.key === 'Escape') { editing = null; render(); }
+});
+
+list.addEventListener('focusout', e => {
+  if (!e.target.classList.contains('edit')) return;
+  const id = Number(e.target.closest('li').dataset.id);
+  const title = e.target.value.trim();
+  editing = null;
+  if (title && title !== tasks.find(t => t.id === id)?.title) patch(id, { title });
+  else render();
+});
+
+$('#purge').addEventListener('click', async () => {
+  if (!tasks.some(t => t.done)) return;
+  const before = tasks;
+  tasks = tasks.filter(t => !t.done);
+  render();
+  try { await api('POST', '/api/tasks/clear-done'); }
+  catch (e) { tasks = before; render(); notify(e.message); }
+});
+
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  filter = b.dataset.f;
+  render();
+}));
+
+qIn.addEventListener('input', () => { query = qIn.value; render(); });
+
+/* ------------------------------------------------------- Toast / Undo --- */
+
+function notify(text, withUndo = false) {
+  toast.querySelector('span').textContent = text;
+  $('#undo').hidden = !withUndo;
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toast.hidden = true; undoItem = null; }, 6000);
+}
+
+$('#undo').addEventListener('click', async () => {
+  if (!undoItem) return;
+  const t = undoItem;
+  undoItem = null;
+  toast.hidden = true;
+  tasks.push(t);
+  render();
+  try { await api('POST', '/api/tasks', t); }
+  catch (e) { tasks = tasks.filter(x => x !== t); render(); notify(e.message); }
+});
+
+/* --------------------------------------------------------- Ansicht --- */
+
+let view = localStorage.getItem('ansicht') === 'notes' ? 'notes' : 'tasks';
+
+function setView(v) {
+  view = v;
+  localStorage.setItem('ansicht', v);
+  $('#view-tasks').hidden = v !== 'tasks';
+  $('#view-notes').hidden = v !== 'notes';
+  $('#count').hidden = v !== 'tasks';
+  document.body.classList.toggle('wide', v === 'notes');
+  document.querySelectorAll('.views button').forEach(b => b.classList.toggle('on', b.dataset.v === v));
+  if (v === 'notes' && notes === null) loadNotes();
+}
+
+document.querySelectorAll('.views button')
+  .forEach(b => b.addEventListener('click', () => setView(b.dataset.v)));
+
+/* ------------------------------------------------------------ Texte --- */
+
+const editor = $('#editor'), noteTitle = $('#note-title'), noteList = $('#notes');
+let notes = null, note = null, saveTimer = 0;
+
+document.execCommand('defaultParagraphSeparator', false, 'p');
+
+const CMD = {
+  h1: () => document.execCommand('formatBlock', false, 'h1'),
+  h2: () => document.execCommand('formatBlock', false, 'h2'),
+  h3: () => document.execCommand('formatBlock', false, 'h3'),
+  p:  () => document.execCommand('formatBlock', false, 'p'),
+  bold:   () => document.execCommand('bold'),
+  italic: () => document.execCommand('italic'),
+  code:   () => document.execCommand('formatBlock', false, 'pre'),
+  ul:     () => document.execCommand('insertUnorderedList'),
+  ol:     () => document.execCommand('insertOrderedList'),
+  quote:  () => document.execCommand('formatBlock', false, 'blockquote'),
+  hr:     () => document.execCommand('insertHorizontalRule'),
+  clear:  () => { document.execCommand('removeFormat'); CMD.p(); },
+};
+
+const when = ts => {
+  const d = new Date(ts);
+  return d.toDateString() === new Date().toDateString()
+    ? d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' });
+};
+
+const saved = text => { $('#saved').textContent = text; };
+
+function renderNotes() {
+  noteList.innerHTML = (notes || []).map(n => `
+    <li data-id="${n.id}" class="${note && note.id === n.id ? 'on' : ''}">
+      <span>${esc(n.title) || 'Ohne Titel'}</span><time>${when(n.updated)}</time>
+    </li>`).join('');
+  const leer = !notes || notes.length === 0;
+  $('.doc').hidden = leer;
+  $('#no-note').hidden = !leer;
+}
+
+async function loadNotes() {
+  try {
+    notes = await api('GET', '/api/notes');
+    if (notes.length) await openNote(notes[0].id);
+    else renderNotes();
+  } catch (e) { notify(e.message); }
+}
+
+async function openNote(id) {
+  await flush();
+  note = await api('GET', `/api/notes/${id}`);
+  noteTitle.value = note.title;
+  editor.innerHTML = note.body || '<p><br></p>';
+  saved('');
+  renderNotes();
+}
+
+/* Speichern: entprellt beim Tippen, hart bei Wechsel/Verlassen */
+function queueSave() {
+  if (!note) return;
+  saved('speichert …');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flush, 700);
+}
+
+async function flush() {
+  clearTimeout(saveTimer);
+  if (!note) return;
+  const title = noteTitle.value.trim(), html = editor.innerHTML;
+  if (title === note.title && html === note.body) return;
+  try {
+    const fresh = await api('PATCH', `/api/notes/${note.id}`, { title, body: html });
+    if (note && note.id === fresh.id) { note = fresh; saved('gespeichert ' + when(fresh.updated)); }
+    const row = notes?.find(x => x.id === fresh.id);
+    if (row) { row.title = fresh.title; row.updated = fresh.updated; }
+    renderNotes();
+  } catch (e) { saved('Fehler: ' + e.message); }
+}
+
+editor.addEventListener('input', queueSave);
+noteTitle.addEventListener('input', queueSave);
+noteTitle.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); editor.focus(); }
+});
+
+noteList.addEventListener('click', e => {
+  const li = e.target.closest('li');
+  if (li) openNote(Number(li.dataset.id));
+});
+
+$('#note-new').addEventListener('click', async () => {
+  try {
+    await flush();
+    note = await api('POST', '/api/notes', { title: '', body: '' });
+    notes.unshift({ id: note.id, title: note.title, updated: note.updated });
+    noteTitle.value = '';
+    editor.innerHTML = '<p><br></p>';
+    saved('');
+    renderNotes();
+    noteTitle.focus();
+  } catch (e) { notify(e.message); }
+});
+
+$('#note-del').addEventListener('click', async () => {
+  if (!note || !confirm('Diesen Text mit allen Bildern löschen?')) return;
+  const gone = note;
+  clearTimeout(saveTimer);
+  notes = notes.filter(n => n.id !== gone.id);
+  note = null;
+  try { await api('DELETE', `/api/notes/${gone.id}`); } catch (e) { notify(e.message); }
+  if (notes.length) await openNote(notes[0].id);
+  else { noteTitle.value = ''; editor.innerHTML = '<p><br></p>'; renderNotes(); }
+});
+
+$('#note-print').addEventListener('click', async () => { await flush(); print(); });
+
+/* Werkzeugleiste: mousedown, damit die Auswahl im Editor erhalten bleibt */
+$('.tools').addEventListener('mousedown', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  e.preventDefault();
+  editor.focus();
+  apply(b.dataset.cmd);
+  queueSave();
+});
+
+/* Screenshots: einfügen oder hineinziehen → landen als BLOB in SQLite */
+async function insertImage(file) {
+  saved('Bild wird geladen …');
+  try {
+    const res = await fetch('/api/img', { method: 'POST', headers: { 'content-type': file.type }, body: file });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+    const { url } = await res.json();
+    editor.focus();
+    document.execCommand('insertHTML', false, `<img src="${url}" alt="">`);
+    queueSave();
+  } catch (e) { saved('Fehler: ' + e.message); }
+}
+
+editor.addEventListener('paste', async e => {
+  const bild = [...(e.clipboardData?.items || [])]
+    .find(i => i.kind === 'file' && i.type.startsWith('image/'))?.getAsFile();
+  if (bild) { e.preventDefault(); return insertImage(bild); }
+  const text = e.clipboardData?.getData('text/plain');   // ohne Fremdformatierung einfügen
+  if (text != null) { e.preventDefault(); document.execCommand('insertText', false, text); queueSave(); }
+});
+
+editor.addEventListener('dragover', e => e.preventDefault());
+editor.addEventListener('drop', e => {
+  const bild = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('image/'));
+  if (!bild) return;
+  e.preventDefault();
+  insertImage(bild);
+});
+
+/* Markdown-Kürzel am Zeilenanfang + ⌘1/2/3/0 */
+const MARK = { '#': 'h1', '##': 'h2', '###': 'h3', '-': 'ul', '*': 'ul', '1.': 'ol', '>': 'quote', '```': 'code' };
+
+function blockOf(node) {
+  let el = node?.nodeType === 3 ? node.parentElement : node;
+  while (el && el !== editor && !/^(P|H1|H2|H3|LI|BLOCKQUOTE|PRE|DIV)$/.test(el.tagName)) el = el.parentElement;
+  return !el || el === editor ? null : el;
+}
+
+/** Zeilenumbruch, danach Fließtext – Überschriften vererben sich nicht.
+    Der Browser führt Teilung und Schreibmarke selbst, wir korrigieren nur den Blocktyp. */
+function newParagraph() {
+  document.execCommand('insertParagraph');
+  CMD.p();
+}
+
+/** Steht die Schreibmarke am Ende des Blocks? */
+function atBlockEnd(b) {
+  const s = getSelection();
+  if (!s.isCollapsed) return false;
+  const r = document.createRange();
+  r.selectNodeContents(b);
+  r.setStart(s.anchorNode, s.anchorOffset);
+  return r.toString().length === 0;
+}
+
+/** Listen, Zitate und Code nie in eine Überschrift verschachteln. */
+function apply(cmd) {
+  const b = blockOf(getSelection().anchorNode);
+  if (b && /^H[123]$/.test(b.tagName) && ['ul', 'ol', 'quote', 'code'].includes(cmd)) CMD.p();
+  CMD[cmd]?.();
+}
+
+editor.addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey) {
+    const cmd = { '1': 'h1', '2': 'h2', '3': 'h3', '0': 'p' }[e.key];
+    if (cmd) { e.preventDefault(); apply(cmd); queueSave(); }
+    return;
+  }
+
+  const b = blockOf(getSelection().anchorNode);
+  if (!b) return;
+
+  if (e.key === 'Enter' && !e.shiftKey) {
+    if (b.tagName === 'PRE') {                       // im Codeblock: Zeilenumbruch,
+      e.preventDefault();                            // zweimal Enter steigt aus
+      if (b.textContent.endsWith('\n')) {
+        b.textContent = b.textContent.slice(0, -1);
+        newParagraph(b);
+      } else {
+        document.execCommand('insertText', false, '\n');
+      }
+      queueSave();
+    } else if (/^H[123]$/.test(b.tagName) && atBlockEnd(b)) {
+      e.preventDefault();
+      newParagraph(b);
+      queueSave();
+    }
+    return;
+  }
+
+  if (e.key !== ' ' || b.tagName === 'PRE') return;
+  const cmd = MARK[b.textContent];
+  if (!cmd || (b.tagName === 'LI' && (cmd === 'ul' || cmd === 'ol'))) return;
+  e.preventDefault();
+  b.textContent = '';
+  caretAt(b, 0);
+  apply(cmd);
+  queueSave();
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flush();
+});
+
+addEventListener('beforeunload', () => {
+  if (!note) return;
+  const title = noteTitle.value.trim(), html = editor.innerHTML;
+  if (title === note.title && html === note.body) return;
+  fetch(`/api/notes/${note.id}`, {
+    method: 'PATCH',
+    keepalive: true,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title, body: html }),
+  });
+});
+
+/* -------------------------------------------------------- Tastatur --- */
+
+addEventListener('keydown', e => {
+  const field = /^(INPUT|TEXTAREA)$/.test(e.target.tagName);
+  const typing = field || e.target.isContentEditable;
+
+  if (e.key === 'Escape') {
+    if (editing !== null) { editing = null; render(); }
+    else if (field) { e.target.value === '' ? e.target.blur() : (e.target.value = '', e.target.dispatchEvent(new Event('input'))); }
+    return;
+  }
+  if (typing || e.metaKey || e.ctrlKey || e.altKey || view !== 'tasks') return;
+  if (e.key === '/') { e.preventDefault(); qIn.focus(); }
+  else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); titleIn.focus(); }
+});
+
+/* ---------------------------------------------------------- Laden --- */
+
+setView(view);
+
+api('GET', '/api/tasks')
+  .then(rows => { tasks = rows; render(); })
+  .catch(e => notify(e.message));
+</script>
+</body>
+</html>
